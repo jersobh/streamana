@@ -9,6 +9,7 @@ import {
     max_video_config,
 } from './resolution.js';
 
+import empty_video_url from './empty-video.js';
 const go_live_el = document.getElementById('go-live');
 go_live_el.disabled = false;
 go_live_el.addEventListener('click', function () {
@@ -157,6 +158,8 @@ if (localStorage.getItem('streamana-encoder-preference') === 'webcodecs') {
     prefer_mediarecorder_el.checked = true;
 }
 
+const poster_el = document.getElementById('poster');
+
 let streamer_config;
 let video_config;
 const video_configs = new Map();
@@ -267,7 +270,7 @@ await set_ingestion();
 document.body.classList.remove('d-none');
 document.documentElement.classList.remove('busy');
 
-let streamer;
+let streamer, audio_context;
 
 async function start() {
     const ingestion_url = ingestion_url_el.value.trim();
@@ -338,7 +341,7 @@ async function start() {
 
     const zoom_video = zoom_video_el.checked;
     const lock_portrait = /*screen.orientation.type.startsWith('portrait') &&*/ lock_portrait_el.checked;
-    let audio_context, video_el, video_track, silence, audio_source, audio_dest, gl_canvas, canvas_stream, done = false;
+    let video_el, video_track, silence, audio_source, audio_dest, gl_canvas, canvas_stream, done = false;
 
     function cleanup(err) {
         if (err) {
@@ -397,9 +400,8 @@ async function start() {
             silence.stop();
         }
         if (audio_context) {
-            audio_context.suspend().then(function () {
-                audio_context.close();
-            });;
+            // Chrome doesn't GC AudioContexts so reuse a single instance.
+            audio_context.suspend();
         }
         if (video_track) {
             video_track.stop();
@@ -652,10 +654,19 @@ async function start() {
     }
 
     try {
-        // Safari requires us to create and resume an AudioContext in the click handler
-        // and doesn't track async calls.
-        audio_context = new AudioContext();
-        audio_context.resume();
+        if (!audio_context) {
+            audio_context = new AudioContext();
+        }
+
+        try {
+            audio_context.resume();
+        } catch {
+            // Safari requires us to create and resume an AudioContext
+            // in the click handler and doesn't track async calls.
+            audio_context.close();
+            audio_context = new AudioContext();
+            audio_context.resume();
+        }
 
         // create video element which will be used for grabbing the frames to
         // write to a canvas so we can apply webgl shaders
@@ -668,7 +679,7 @@ async function start() {
         // Safari on iOS requires us to play() in the click handler and doesn't
         // track async calls. So we play a blank video first. After that, the video
         // element is blessed for script-driven playback.
-        video_el.src = 'empty.mp4';
+        video_el.src = empty_video_url;
         await video_el.play();
 
         canvas_el.addEventListener('webglcontextlost', cleanup);
@@ -755,7 +766,8 @@ async function start() {
                                 streamer_config,
                                 lock_portrait,
                                 { method, mode },
-                                prefer_webcodecs_el.checked);
+                                prefer_webcodecs_el.checked,
+                                poster_el.contentWindow);
         streamer.addEventListener('run', () => console.log('Streamer running'));
         streamer.addEventListener('exit', ev => {
             const msg = `Streamer exited with status ${ev.detail.code}`;
